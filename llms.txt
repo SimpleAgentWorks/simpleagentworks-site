@@ -1,0 +1,17 @@
+# SimpleAgentWorks
+> Cinematic website design and development for businesses. Our initial focus is DuPage County, Illinois; we can work with businesses outside DuPage too.
+
+## Main pages
+- [Home](https://www.simpleagentworks.com/): The base website offer, fit call, process and common questions.
+- [DuPage cinematic website](https://www.simpleagentworks.com/dupage-cinematic.html): A second presentation of the local website offer.
+
+## What we offer
+- Cinematic business website design and development, with basic hosting included subject to agreed usage limits.
+- You own and pay for your domain. Copy and images can be supplied by you or generated with your review.
+- Two rounds of edits before initial launch. A basic site typically takes 3-10 business days after complete customer information and assets, subject to agreed scope.
+- Custom web apps, booking flows and integrations are separate quotes. No client results or testimonials are claimed on the site.
+- Google Business Profile is free; SimpleAgentWorks' paid work is website design and implementation.
+- A fit call is a 30-minute Google Meet with John, bookable from the homepage.
+- Contact: info@simpleagentworks.com. Address shown on site: 400 S. Hale St., Wheaton, IL 60187.
+
+This file summarizes existing public pages; see those pages for the current offer and terms.
