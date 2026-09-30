@@ -1,0 +1,15 @@
+{
+  "redirects": [
+    {
+      "source": "/(.*)",
+      "destination": "https://www.simpleagentworks.com/$1",
+      "statusCode": 308,
+      "has": [
+        {
+          "type": "host",
+          "value": "simpleagentworks.com"
+        }
+      ]
+    }
+  ]
+}
