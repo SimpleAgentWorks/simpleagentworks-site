@@ -8,8 +8,9 @@
 import {
   config, respond, validateInquiry, rateLimit, attachRateHeaders,
   ipFromHeaders, captureInquiry, buildJobs, notificationStates, storageConfigured,
-  storageErrorText,
+  storageErrorText, normalizeOrigin,
 } from './_lib.mjs';
+import { processBatch } from './notifications.mjs';
 
 async function readBody(req) {
   if (req.body !== undefined && req.body !== null) {
@@ -43,8 +44,12 @@ export default async function handler(req, res) {
   }
 
   // Same-origin enforcement. Third-party form posts are rejected outright.
+  // Compared against an EXACT allowlist (no wildcards). The allowlist is
+  // built from Vercel platform env vars when available, so it follows the
+  // deployment automatically.
   const origin = req.headers.origin;
-  if (!origin || !config.allowedOrigins.includes(origin)) {
+  const normalized = normalizeOrigin(origin);
+  if (!normalized || !config.allowedOrigins.includes(normalized)) {
     return respond(res, 403, { error: 'This form origin is not allowed.' });
   }
 
@@ -114,6 +119,50 @@ export default async function handler(req, res) {
     return respond(res, 200, { ok: true, id: capture.id, duplicate: true, notifications: states });
   }
 
+  // --- post-submit dispatch -------------------------------------------
+  // The capture transaction has COMMITTED, so the notification jobs are
+  // durable. Drain them now instead of waiting for a scheduled cron.
+  //
+  // This must never delay or fail the user's request: the inquiry is already
+  // saved, so a dispatch problem is reported in the response metadata and
+  // logged, not surfaced as a user-facing error. The durable outbox means a
+  // failed dispatch is still deliverable later.
+  const dispatch = await dispatchNotifications();
   const states = await notificationStates(capture.id).catch(() => []);
-  return respond(res, 200, { ok: true, id: capture.id, notifications: states });
+  return respond(res, 200, {
+    ok: true,
+    id: capture.id,
+    notifications: states,
+    dispatch,
+  });
+}
+
+/**
+ * Drain the notification outbox immediately after a successful capture.
+ *
+ * Returns a small summary object. NEVER throws - a dispatch failure must not
+ * turn a durably-saved inquiry into a user-facing error.
+ */
+async function dispatchNotifications() {
+  if (!config.notifyEnabled) {
+    // Delivery is disabled (SWAIN_NOTIFY_ENABLED != 'true'). processBatch
+    // reads the outbox and reports what it would do but sends nothing, and
+    // leaves every job in its original state. Safe by design.
+    return { attempted: false, reason: 'delivery_disabled' };
+  }
+  try {
+    const summary = await processBatch({ limit: 10 });
+    return {
+      attempted: true,
+      enabled: Boolean(summary.enabled),
+      processed: (summary.processed || []).length,
+      held: (summary.held || []).length,
+      failed: (summary.failed || []).length,
+    };
+  } catch (err) {
+    // The outbox is durable, so this is recoverable: the jobs stay queued for
+    // the next dispatch. Log it and report, but do not fail the request.
+    console.error('[swain] post-submit dispatch failed:', err && err.message);
+    return { attempted: true, error: 'dispatch_failed' };
+  }
 }

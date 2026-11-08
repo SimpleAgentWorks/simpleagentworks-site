@@ -23,7 +23,7 @@
 //   node scripts/swain-notification-worker.mjs --loop --interval 30
 
 import {
-  config, stable, safeEqual, sha256,
+  config, stable, safeEqual, sha256, retryDelaySeconds,
 } from './_lib.mjs';
 
 const STATE = {
@@ -211,16 +211,26 @@ async function sendEmailViaGmailApi(job, gmail) {
 
 /**
  * Claim a batch of due jobs atomically.
- * A job is claimable when: state='pending', or state='sending' with an expired
- * lease (worker died mid-flight => ambiguous => we HOLD it rather than resend).
+ *
+ * A job is claimable when:
+ *   - state='pending'                              -> never attempted
+ *   - state='failed' AND attempts < maxAttempts     -> definitive rejection,
+ *     safe to retry (this was the dead-letter gap: 'failed' was documented as
+ *     retryable but was never claimed by anything)
+ *   - state='sending' with an expired lease         -> worker died mid-flight
+ *     => AMBIGUOUS => we HOLD it rather than resend
+ *
+ * A failed job is only re-claimed once its backoff window has elapsed, so a
+ * permanently-bad destination cannot spin the worker.
  */
 async function claimJobs(limit) {
   const nowIso = new Date().toISOString();
-  const rows = await sb('swain_notification_outbox?select=id,inquiry_id,channel,destination,recipient,subject,body,state,attempts,lease_until' +
-    '&or=(state.eq.pending,and(state.eq.sending,lease_until.lt.' + nowIso + '))' +
+  const rows = await sb('swain_notification_outbox?select=id,inquiry_id,channel,destination,recipient,subject,body,state,attempts,lease_until,updated_at' +
+    '&or=(state.eq.pending,state.eq.failed,and(state.eq.sending,lease_until.lt.' + nowIso + '))' +
     '&order=created_at.asc&limit=' + limit);
 
   const claimed = [];
+  const exhausted = [];
   for (const row of rows || []) {
     if (row.state === STATE.sending) {
       // Worker died after claiming: the provider may or may not have sent it.
@@ -236,8 +246,36 @@ async function claimJobs(limit) {
       });
       continue;
     }
+    if (row.state === STATE.failed) {
+      // Retry a definitive rejection - but only after the backoff window, and
+      // only while attempts remain.
+      const attempts = row.attempts || 0;
+      if (attempts >= config.maxAttempts) {
+        // Out of retries: park it in 'held' so it is VISIBLE to a human
+        // instead of silently disappearing into a dead letter.
+        await sb('swain_notification_outbox?id=eq.' + row.id, {
+          method: 'PATCH',
+          body: JSON.stringify({
+            state: STATE.held,
+            provider_status: 'retries_exhausted',
+            last_error: 'Failed after ' + attempts + ' attempt(s); no retries left. Review required.',
+            lease_until: null,
+            updated_at: new Date().toISOString(),
+          }),
+        });
+        exhausted.push({ id: row.id, destination: row.destination, state: 'held_retries_exhausted' });
+        continue;
+      }
+      const delay = retryDelaySeconds(attempts, config.retryBaseSeconds, config.retryMaxSeconds);
+      const dueAt = new Date(Date.now() - delay * 1000).toISOString();
+      const lastTry = row.updated_at || row.created_at || dueAt;
+      if (new Date(lastTry).getTime() + delay * 1000 > Date.now()) {
+        continue; // backoff not elapsed yet
+      }
+    }
     const lease = new Date(Date.now() + 120000).toISOString();
-    const upd = await sb('swain_notification_outbox?id=eq.' + row.id + '&state=eq.pending', {
+    const upd = await sb('swain_notification_outbox?id=eq.' + row.id +
+      '&state=eq.' + (row.state === STATE.failed ? STATE.failed : STATE.pending), {
       method: 'PATCH',
       headers: { Prefer: 'return=representation' },
       body: JSON.stringify({
@@ -248,9 +286,14 @@ async function claimJobs(limit) {
       }),
     });
     const updated = Array.isArray(upd) ? upd[0] : upd;
-    if (updated && updated.state === STATE.sending) claimed.push(updated);
+    if (updated && updated.state === STATE.sending) {
+      // Remember the state the job had BEFORE we claimed it, so the disabled
+      // path can restore a 'failed' job to 'failed' (not 'pending') and a
+      // disabled run never silently erases retry history.
+      claimed.push({ ...updated, prior_state: row.state });
+    }
   }
-  return claimed;
+  return { claimed, exhausted };
 }
 
 async function markJob(id, result) {
@@ -293,15 +336,34 @@ export async function processBatch({ limit = 20, gogBin, gmail, allowSend = null
     return { ...summary, error: 'storage_not_configured' };
   }
 
-  const jobs = await claimJobs(limit);
+  let claimed;
+  let exhausted = [];
+  try {
+    ({ claimed: claimed = [], exhausted = exhausted } = await claimJobs(limit));
+  } catch (err) {
+    // Storage unreachable: report it and stop. Nothing is claimed, nothing is
+    // sent, and every job stays in its original state.
+    return { ...summary, error: 'storage_unavailable', detail: String(err && err.message).slice(0, 160) };
+  }
+  const jobs = claimed;
+  // Jobs that ran out of retries are parked in 'held' and surfaced so a human
+  // sees them instead of them vanishing as dead letters.
+  for (const e of exhausted || []) {
+    summary.held.push({ id: e.id, destination: e.destination, state: e.state });
+  }
   for (const job of jobs) {
     if (!enabled) {
-      // Safe default: put it back so nothing is lost and nothing is sent.
+      // Safe default: put it back EXACTLY as it was, so nothing is lost and
+      // nothing is sent. A job that was 'failed' must go back to 'failed'
+      // (not 'pending'), otherwise a disabled run would silently reset the
+      // retry history and hide the failure.
+      const restoreState = job.prior_state === STATE.failed ? STATE.failed : STATE.pending;
       await sb('swain_notification_outbox?id=eq.' + job.id, {
         method: 'PATCH',
         body: JSON.stringify({
-          state: STATE.pending,
+          state: restoreState,
           lease_until: null,
+          attempts: (job.attempts || 1) - 1, // undo the claim's attempt bump
           updated_at: new Date().toISOString(),
         }),
       });

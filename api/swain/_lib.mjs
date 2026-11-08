@@ -16,12 +16,24 @@
 //   SUPABASE_URL                       - required for capture
 //   SUPABASE_SERVICE_ROLE_KEY          - required for capture
 //   SWAIN_ALLOWED_ORIGINS              - comma-separated same-origin allowlist
+//                                       (exact origins only; no wildcards).
+//                                       In addition to this, the Vercel
+//                                       platform vars VERCEL_BRANCH_URL,
+//                                       VERCEL_URL and
+//                                       VERCEL_PROJECT_PRODUCTION_URL are
+//                                       honoured automatically, so the
+//                                       allowlist follows the deployment
+//                                       without being rewritten each deploy.
 //   SWAIN_HMAC_SECRET                  - secret for deriving rate-limit keys
 //   SWAIN_RATE_PER_IP                  - per-key request cap (default 5)
 //   SWAIN_RATE_WINDOW_SECONDS          - rate-limit window (default 3600)
 //   SWAIN_RATE_GLOBAL                  - global request cap (default 50)
 //   SWAIN_RATE_GLOBAL_WINDOW_SECONDS   - global window (default 3600)
 //   SWAIN_NOTIFY_ENABLED               - 'true' to actually deliver notifications
+//   SWAIN_MAX_ATTEMPTS                 - delivery attempts before a failed job
+//                                       is parked in 'held' for review (default 3)
+//   SWAIN_RETRY_BASE_SECONDS           - retry backoff base (default 60)
+//   SWAIN_RETRY_MAX_SECONDS            - retry backoff cap (default 3600)
 //   SWAIN_EMAIL_TO                     - full-inquiry email recipient
 //   SWAIN_EMAIL_FROM                   - sender address
 //   TWILIO_ACCOUNT_SID                 - Twilio account sid
@@ -45,12 +57,93 @@ function intEnv(name, fallback) {
   return Number.isFinite(n) && n > 0 ? n : fallback;
 }
 
+/**
+ * True only for an EXACT origin: scheme://host[:port] with no path, no query,
+ * no credentials, no wildcard, and an http/https scheme.
+ *
+ * Used to filter origin allowlist candidates so a malformed or wildcard value
+ * can never widen the allowlist.
+ */
+export function isExactOrigin(value) {
+  if (typeof value !== 'string') return false;
+  const s = value.trim();
+  if (!s || s.includes('*')) return false;
+  if (!/^https?:\/\//i.test(s)) return false;
+  if (s.includes('@')) return false;               // embedded credentials
+  // A path, query or fragment is not allowed. A single trailing slash after
+  // the host IS allowed (it is the same origin).
+  const afterHost = s.slice(s.indexOf('//') + 2);
+  if (afterHost.includes('/') && afterHost.replace(/\/$/, '').includes('/')) return false;
+  if (s.includes('?') || s.includes('#')) return false;
+  if (s.includes(' ')) return false;
+  try {
+    const u = new URL(s);
+    // A bare trailing slash is the same origin - accept it (browsers and
+    // platform env vars differ on whether the slash is included).
+    if (u.pathname !== '/' && u.pathname !== '') return false;
+    if (u.search || u.hash) return false;
+    if (!u.hostname) return false;
+    if (u.hostname.includes('*')) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Normalize an origin string to its canonical `scheme://host[:port]` form so
+ * comparison is exact (no trailing slash, no default-port noise).
+ */
+export function normalizeOrigin(value) {
+  if (!isExactOrigin(value)) return null;
+  const u = new URL(String(value).trim());
+  return u.origin;
+}
+
+/**
+ * Backoff delay for a failed job, in seconds, given how many attempts have
+ * already been made. Exponential with a cap. Attempt 1 fails immediately-ish
+ * (base), attempt 2 waits base*2, attempt 3 waits base*4, capped.
+ */
+export function retryDelaySeconds(attempts, base = 60, max = 3600) {
+  const n = Math.max(1, Number(attempts) || 1);
+  const d = base * Math.pow(2, n - 1);
+  return Math.min(max, Math.round(d));
+}
+
 export const config = {
   get supabaseUrl() { return (process.env.SUPABASE_URL || '').replace(/\/+$/, ''); },
   get supabaseKey() { return process.env.SUPABASE_SERVICE_ROLE_KEY || ''; },
+
+  /**
+   * Allowed request origins.
+   *
+   * Priority:
+   *   1. Vercel platform-provided values (VERCEL_BRANCH_URL / VERCEL_URL /
+   *      VERCEL_PROJECT_PRODUCTION_URL). These are set automatically by Vercel
+   *      for every deployment, so the allowlist follows the deployment instead
+   *      of needing to be rewritten (and redeployed) every time a preview host
+   *      changes. No wildcards: each entry is an exact origin string.
+   *   2. SWAIN_ALLOWED_ORIGINS (comma-separated, exact origins) for anything
+   *      the platform does not provide.
+   *
+   * Every candidate must be an exact `scheme://host[:port]` origin. A bare
+   * hostname, a path, a wildcard, or a non-http(s) scheme is rejected, so a
+   * misconfigured value can never widen the allowlist.
+   */
   get allowedOrigins() {
-    const raw = process.env.SWAIN_ALLOWED_ORIGINS || 'https://www.simpleagentworks.com';
-    return raw.split(',').map((s) => s.trim()).filter(Boolean);
+    const raw = [
+      process.env.SWAIN_ALLOWED_ORIGINS || '',
+      process.env.VERCEL_BRANCH_URL || '',
+      process.env.VERCEL_URL || '',
+      process.env.VERCEL_PROJECT_PRODUCTION_URL || '',
+    ].join(',');
+    const out = [];
+    for (const s of raw.split(',')) {
+      const norm = normalizeOrigin(s.trim());
+      if (norm && !out.includes(norm)) out.push(norm);
+    }
+    return out;
   },
   get hmacSecret() { return process.env.SWAIN_HMAC_SECRET || ''; },
   get ratePerIp() { return intEnv('SWAIN_RATE_PER_IP', 5); },
@@ -58,6 +151,19 @@ export const config = {
   get rateGlobal() { return intEnv('SWAIN_RATE_GLOBAL', 50); },
   get rateGlobalWindowSeconds() { return intEnv('SWAIN_RATE_GLOBAL_WINDOW_SECONDS', 3600); },
   get notifyEnabled() { return process.env.SWAIN_NOTIFY_ENABLED === 'true'; },
+
+  /**
+   * Retry policy for FAILED (definitively rejected) jobs.
+   *
+   * A failed job is a definitive provider rejection (bad address, not
+   * configured, etc.) - it is NOT ambiguous, so it is safe to retry. Before
+   * this existed, `failed` was never claimed by anything, so failed jobs were
+   * permanent dead letters even though the state machine documents them as
+   * retryable.
+   */
+  get maxAttempts() { return intEnv('SWAIN_MAX_ATTEMPTS', 3); },
+  get retryBaseSeconds() { return intEnv('SWAIN_RETRY_BASE_SECONDS', 60); },
+  get retryMaxSeconds() { return intEnv('SWAIN_RETRY_MAX_SECONDS', 3600); },
   get emailTo() { return process.env.SWAIN_EMAIL_TO || ''; },
   get emailFrom() { return process.env.SWAIN_EMAIL_FROM || 'info@simpleagentworks.com'; },
   get twilioSid() { return process.env.TWILIO_ACCOUNT_SID || ''; },
