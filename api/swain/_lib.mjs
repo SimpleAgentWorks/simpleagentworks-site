@@ -24,6 +24,9 @@
 //                                       honoured automatically, so the
 //                                       allowlist follows the deployment
 //                                       without being rewritten each deploy.
+//                                       Vercel supplies those as BARE
+//                                       HOSTNAMES (no scheme); they are
+//                                       normalised to https://host.
 //   SWAIN_HMAC_SECRET                  - secret for deriving rate-limit keys
 //   SWAIN_RATE_PER_IP                  - per-key request cap (default 5)
 //   SWAIN_RATE_WINDOW_SECONDS          - rate-limit window (default 3600)
@@ -58,45 +61,40 @@ function intEnv(name, fallback) {
 }
 
 /**
- * True only for an EXACT origin: scheme://host[:port] with no path, no query,
- * no credentials, no wildcard, and an http/https scheme.
+ * Normalize a value to an exact origin.
  *
- * Used to filter origin allowlist candidates so a malformed or wildcard value
- * can never widen the allowlist.
- */
-export function isExactOrigin(value) {
-  if (typeof value !== 'string') return false;
-  const s = value.trim();
-  if (!s || s.includes('*')) return false;
-  if (!/^https?:\/\//i.test(s)) return false;
-  if (s.includes('@')) return false;               // embedded credentials
-  // A path, query or fragment is not allowed. A single trailing slash after
-  // the host IS allowed (it is the same origin).
-  const afterHost = s.slice(s.indexOf('//') + 2);
-  if (afterHost.includes('/') && afterHost.replace(/\/$/, '').includes('/')) return false;
-  if (s.includes('?') || s.includes('#')) return false;
-  if (s.includes(' ')) return false;
-  try {
-    const u = new URL(s);
-    // A bare trailing slash is the same origin - accept it (browsers and
-    // platform env vars differ on whether the slash is included).
-    if (u.pathname !== '/' && u.pathname !== '') return false;
-    if (u.search || u.hash) return false;
-    if (!u.hostname) return false;
-    if (u.hostname.includes('*')) return false;
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Normalize an origin string to its canonical `scheme://host[:port]` form so
- * comparison is exact (no trailing slash, no default-port noise).
+ * Accepts EITHER:
+ *   - a full origin        'https://host'  -> returned as-is
+ *   - a bare host/hostname 'host'          -> becomes 'https://host'
+ *
+ * Vercel's platform env vars (VERCEL_URL, VERCEL_BRANCH_URL,
+ * VERCEL_PROJECT_PRODUCTION_URL) are BARE HOSTNAMES with no scheme, so they
+ * must be accepted and given one.
+ *
+ * Rejects (returns null): wildcards, paths, queries, fragments, embedded
+ * credentials, non-http(s) schemes and anything unparseable. A rejected value
+ * is dropped rather than widening the allowlist.
  */
 export function normalizeOrigin(value) {
-  if (!isExactOrigin(value)) return null;
-  const u = new URL(String(value).trim());
+  if (typeof value !== 'string') return null;
+  let s = value.trim();
+  if (!s || s.includes('*') || s.includes(' ')) return null;
+  if (s.includes('@')) return null;                    // embedded credentials
+  if (s.includes('?') || s.includes('#')) return null;  // query / fragment
+
+  // A bare hostname gets the default https scheme.
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(s)) {
+    if (!/^[a-z0-9.-]+(:\d+)?$/i.test(s)) return null;
+    s = 'https://' + s;
+  }
+
+  let u;
+  try { u = new URL(s); } catch { return null; }
+  if (u.protocol !== 'https:' && u.protocol !== 'http:') return null;
+  // Only the root path is allowed (a trailing slash is the same origin).
+  if (u.pathname !== '/' && u.pathname !== '') return null;
+  if (u.search || u.hash) return null;
+  if (!u.hostname || u.hostname.includes('*')) return null;
   return u.origin;
 }
 

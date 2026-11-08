@@ -88,7 +88,7 @@ process.on('uncaughtException', (e) => {
 // 2. Import the modules under test with a fake transport.
 // ---------------------------------------------------------------------------
 const { config } = await import(pathToFileURL(path.join(REPO, 'api/swain/_lib.mjs')).href);
-const { isExactOrigin, normalizeOrigin, retryDelaySeconds } =
+const { normalizeOrigin, retryDelaySeconds } =
   await import(pathToFileURL(path.join(REPO, 'api/swain/_lib.mjs')).href);
 
 const STORAGE = {
@@ -109,12 +109,23 @@ const notifications = await import(
 );
 
 section('A. policy helpers');
-check('isExactOrigin rejects a wildcard', isExactOrigin('https://*.vercel.app') === false);
-check('isExactOrigin rejects a path', isExactOrigin('https://a.vercel.app/x') === false);
-check('isExactOrigin rejects a missing scheme', isExactOrigin('a.vercel.app') === false);
-check('isExactOrigin accepts a bare origin', isExactOrigin('https://a.vercel.app') === true);
-check('normalizeOrigin strips the trailing slash',
+check('a wildcard is rejected', normalizeOrigin('https://*.vercel.app') === null);
+check('a path is rejected', normalizeOrigin('https://a.vercel.app/x') === null);
+check('a query is rejected', normalizeOrigin('https://a.vercel.app?x=1') === null);
+check('a fragment is rejected', normalizeOrigin('https://a.vercel.app#x') === null);
+check('embedded credentials are rejected', normalizeOrigin('https://u:p@a.vercel.app') === null);
+check('a non-http scheme is rejected', normalizeOrigin('javascript:alert(1)') === null);
+check('a bare origin is accepted',
+  normalizeOrigin('https://a.vercel.app') === 'https://a.vercel.app');
+check('a trailing slash is normalised away',
   normalizeOrigin('https://a.vercel.app/') === 'https://a.vercel.app');
+check('a BARE HOSTNAME gets the https scheme (Vercel platform vars)',
+  normalizeOrigin('simpleagentworks-site-abc-team.vercel.app') ===
+  'https://simpleagentworks-site-abc-team.vercel.app');
+check('a bare hostname with a port is accepted',
+  normalizeOrigin('localhost:3000') === 'http://localhost:3000' ||
+  normalizeOrigin('localhost:3000') === 'https://localhost:3000');
+check('garbage is rejected', normalizeOrigin('not a host') === null);
 check('retryDelaySeconds backs off exponentially',
   retryDelaySeconds(1, 60, 3600) === 60 && retryDelaySeconds(2, 60, 3600) === 120);
 check('retryDelaySeconds is capped',
@@ -123,21 +134,27 @@ check('retryDelaySeconds is capped',
 section('B. platform-based origin allowlist');
 const savedEnv = { ...process.env };
 delete process.env.SWAIN_ALLOWED_ORIGINS;
-process.env.VERCEL_BRANCH_URL = 'https://simpleagentworks-site-git-feat-x-team.vercel.app';
-process.env.VERCEL_URL = 'https://simpleagentworks-site-abc123-team.vercel.app';
-process.env.VERCEL_PROJECT_PRODUCTION_URL = 'https://www.simpleagentworks.com';
-check('VERCEL_BRANCH_URL is included', config.allowedOrigins.includes(
+// Vercel supplies BARE HOSTNAMES with no scheme - that is the real shape.
+process.env.VERCEL_BRANCH_URL = 'simpleagentworks-site-git-feat-x-team.vercel.app';
+process.env.VERCEL_URL = 'simpleagentworks-site-abc123-team.vercel.app';
+process.env.VERCEL_PROJECT_PRODUCTION_URL = 'simpleagentworks.com';
+check('a bare VERCEL_BRANCH_URL host is included', config.allowedOrigins.includes(
   'https://simpleagentworks-site-git-feat-x-team.vercel.app'), JSON.stringify(config.allowedOrigins));
-check('VERCEL_URL is included', config.allowedOrigins.includes(
+check('a bare VERCEL_URL host is included', config.allowedOrigins.includes(
   'https://simpleagentworks-site-abc123-team.vercel.app'));
-check('VERCEL_PROJECT_PRODUCTION_URL is included', config.allowedOrigins.includes(
-  'https://www.simpleagentworks.com'));
+check('a bare production host is included', config.allowedOrigins.includes(
+  'https://simpleagentworks.com'));
 check('no wildcard ever appears in the allowlist',
   config.allowedOrigins.every((o) => !o.includes('*')));
 check('a malformed platform var is dropped, not widened',
   (() => {
     process.env.VERCEL_URL = 'https://*.vercel.app';
     return !config.allowedOrigins.some((o) => o.includes('*'));
+  })());
+check('a platform var with a path is dropped',
+  (() => {
+    process.env.VERCEL_URL = 'https://a.vercel.app/some/path';
+    return !config.allowedOrigins.some((o) => o.includes('/some/path'));
   })());
 process.env = { ...savedEnv };
 
