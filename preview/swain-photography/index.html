@@ -94,7 +94,17 @@
   textarea{min-height:96px;resize:vertical}
   .send{justify-self:center;margin-top:10px;padding:16px 52px;background:var(--ink);color:#fff;border:none;border-radius:100px;font-family:'Outfit';font-size:15px;font-weight:500;letter-spacing:.03em;cursor:pointer;transition:transform .2s cubic-bezier(.16,1,.3,1)}
   .send:hover{transform:translateY(-2px)}
+  .send[disabled]{opacity:.6;cursor:progress;transform:none}
   .quote-note{margin-top:22px;font-size:13px;color:var(--muted);text-align:center}
+  /* form status: success / error, announced to screen readers */
+  .form-status{margin-top:18px;padding:14px 18px;border-radius:10px;font-size:15px;line-height:1.55;display:none}
+  .form-status.show{display:block}
+  .form-status.ok{background:#eaf4ec;border:1px solid #b9d9c1;color:#1f4d2c}
+  .form-status.err{background:#fbecea;border:1px solid #e8b8b3;color:#7a2620}
+  .form-status b{font-weight:600}
+  /* honeypot: hidden from humans, visible to bots */
+  .hp-field{position:absolute!important;left:-9999px!important;top:auto!important;width:1px!important;height:1px!important;overflow:hidden!important}
+  .field-invalid input,.field-invalid textarea{border-color:#b4443a}
 
   footer{border-top:1px solid var(--line);padding:34px 24px;display:flex;flex-wrap:wrap;gap:14px;justify-content:space-between;align-items:center;font-size:13px;color:var(--muted)}
   footer .brand{font-family:'Fraunces',serif;font-size:16px;color:var(--ink)}
@@ -193,20 +203,26 @@
   <div class="tag">Inquiries</div>
   <h2>Let's plan your shoot</h2>
   <p class="lead">Tell me about your moment. Every inquiry gets a personal reply and a custom quote, never a one-size package.</p>
-  <form onsubmit="return false">
+  <form id="inquiry-form" novalidate>
     <div>
       <label for="name">Your name</label>
-      <input id="name" type="text" placeholder="First and last name">
+      <input id="name" name="name" type="text" placeholder="First and last name" autocomplete="name" maxlength="120">
     </div>
     <div>
       <label for="email">Email</label>
-      <input id="email" type="email" placeholder="you@example.com">
+      <input id="email" name="email" type="email" placeholder="you@example.com" autocomplete="email" maxlength="254">
     </div>
     <div>
       <label for="msg">What are we capturing?</label>
-      <textarea id="msg" placeholder="A couple's session by the lake in early June, a graduation party, a new puppy..."></textarea>
+      <textarea id="msg" name="message" placeholder="A couple's session by the lake in early June, a graduation party, a new puppy..." maxlength="4000"></textarea>
     </div>
-    <button class="send" type="submit">Send inquiry</button>
+    <!-- honeypot: humans never see this; bots that fill it are silently discarded -->
+    <div class="hp-field" aria-hidden="true">
+      <label for="company_website">Leave this field empty</label>
+      <input id="company_website" name="hp" type="text" tabindex="-1" autocomplete="off" value="">
+    </div>
+    <button class="send" type="submit" id="inquiry-send">Send inquiry</button>
+    <p class="form-status" id="inquiry-status" role="status" aria-live="polite"></p>
   </form>
   <p class="quote-note">Pricing is quoted per session after your inquiry.</p>
 </section>
@@ -226,6 +242,104 @@
     var h=document.documentElement.scrollHeight-window.innerHeight;
     window.scrollTo({top:h*parseInt(m[1],10)/100,behavior:'instant'});
   },600);});}
+})();
+
+/* Inquiry form: submits in place to /api/swain/inquiry.
+   - no redirect, no third-party form
+   - button disabled while sending
+   - clear success / error states
+   - the submission id is created once and REUSED across retries, so a retry
+     after a network failure can never create a second inquiry or a second
+     set of notifications. */
+(function(){
+  var form=document.getElementById('inquiry-form');
+  if(!form)return;
+  var btn=document.getElementById('inquiry-send');
+  var status=document.getElementById('inquiry-status');
+  var nameEl=document.getElementById('name');
+  var emailEl=document.getElementById('email');
+  var msgEl=document.getElementById('msg');
+  var hpEl=document.getElementById('company_website');
+  var submissionId=null;
+  var sending=false;
+
+  function newId(){
+    if(window.crypto&&crypto.randomUUID)return crypto.randomUUID();
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g,function(c){
+      var r=Math.random()*16|0,v=c==='x'?r:(r&0x3|0x8);return v.toString(16);
+    });
+  }
+  function setStatus(kind,html){
+    status.className='form-status'+(kind?' '+kind:'')+' show';
+    status.innerHTML=html;
+  }
+  function clearStatus(){
+    status.className='form-status';status.innerHTML='';
+  }
+  function markInvalid(el,bad){
+    var wrap=el.closest('div');
+    if(wrap)wrap.classList.toggle('field-invalid',bad);
+  }
+
+  form.addEventListener('submit',function(ev){
+    ev.preventDefault();
+    if(sending)return;
+    clearStatus();
+
+    var name=(nameEl.value||'').trim();
+    var email=(emailEl.value||'').trim();
+    var msg=(msgEl.value||'').trim();
+    var bad=false;
+    markInvalid(nameEl,!name);markInvalid(emailEl,!email||!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email));markInvalid(msgEl,!msg);
+    if(!name||!email||!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)||!msg){bad=true;}
+    if(bad){setStatus('err','Please complete your name, a valid email, and a short description.');return;}
+
+    // Reuse the same id for every retry of the same content.
+    if(!submissionId)submissionId=newId();
+
+    sending=true;
+    var original=btn.textContent;
+    btn.disabled=true;
+    btn.textContent='Sending…';
+    setStatus('ok','Sending your inquiry…');
+
+    fetch('/api/swain/inquiry',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        clientId:'swain-photography',
+        submissionId:submissionId,
+        name:name,
+        email:email,
+        message:msg,
+        hp:hpEl?(hpEl.value||''):''
+      })
+    }).then(function(res){
+      return res.json().catch(function(){return{};}).then(function(data){
+        return {status:res.status,data:data};
+      });
+    }).then(function(r){
+      if(r.status>=200&&r.status<300&&r.data&&r.data.ok){
+        setStatus('ok','<b>Thank you — your inquiry is in.</b> Jenna will reply personally to '+email.replace(/[<>&"]/g,'')+' with a custom quote.');
+        form.reset();
+        submissionId=null;
+        btn.removeAttribute('disabled');
+        btn.textContent='Send another inquiry';
+      }else{
+        var msgText=(r.data&&r.data.error)?r.data.error:'We could not send your inquiry. Please try again.';
+        setStatus('err',msgText);
+        // Keep the id so a retry is idempotent rather than a second inquiry.
+        btn.removeAttribute('disabled');
+        btn.textContent=original;
+      }
+    }).catch(function(){
+      setStatus('err','We could not reach the server. Your details are still here — please try again.');
+      btn.removeAttribute('disabled');
+      btn.textContent=original;
+    }).then(function(){
+      sending=false;
+    });
+  });
 })();
 </script>
 </body>
