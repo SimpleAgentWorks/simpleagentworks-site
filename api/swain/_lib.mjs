@@ -18,13 +18,21 @@
 //   SWAIN_ALLOWED_ORIGINS              - comma-separated same-origin allowlist
 //                                       (exact origins only; no wildcards).
 //                                       In addition to this, the Vercel
-//                                       platform vars VERCEL_BRANCH_URL,
-//                                       VERCEL_URL and
-//                                       VERCEL_PROJECT_PRODUCTION_URL are
-//                                       honoured automatically, so the
-//                                       allowlist follows the deployment
-//                                       without being rewritten each deploy.
-//                                       Vercel supplies those as BARE
+//                                       platform vars are honoured
+//                                       automatically, so the allowlist
+//                                       follows the deployment without being
+//                                       rewritten each deploy:
+//                                         VERCEL_URL                   - THIS
+//                                           deployment's own host (always set)
+//                                         VERCEL_PROJECT_PRODUCTION_URL
+//                                           - the production domain
+//                                         VERCEL_BRANCH_URL           - a
+//                                           branch alias, ONLY when the
+//                                           platform provides one. It is NOT
+//                                           present on CLI-created preview
+//                                           deployments, so it must not be
+//                                           relied on.
+//                                       Vercel supplies these as BARE
 //                                       HOSTNAMES (no scheme); they are
 //                                       normalised to https://host.
 //   SWAIN_HMAC_SECRET                  - secret for deriving rate-limit keys
@@ -33,12 +41,25 @@
 //   SWAIN_RATE_GLOBAL                  - global request cap (default 50)
 //   SWAIN_RATE_GLOBAL_WINDOW_SECONDS   - global window (default 3600)
 //   SWAIN_NOTIFY_ENABLED               - 'true' to actually deliver notifications
+//   SWAIN_ALLOW_GOG_FALLBACK           - 'true'/'false' to force the Mac-only
+//                                       `gog` email transport on or off. When
+//                                       unset, the fallback is used ONLY if
+//                                       the gog binary exists on disk - so a
+//                                       serverless runtime never attempts it.
+//   SWAIN_DISPATCH_BUDGET_MS           - wall-clock budget for the post-submit
+//                                       drain (default 5000)
+//   SWAIN_DISPATCH_BATCH               - jobs per drain (default 2)
 //   SWAIN_MAX_ATTEMPTS                 - delivery attempts before a failed job
 //                                       is parked in 'held' for review (default 3)
 //   SWAIN_RETRY_BASE_SECONDS           - retry backoff base (default 60)
 //   SWAIN_RETRY_MAX_SECONDS            - retry backoff cap (default 3600)
 //   SWAIN_EMAIL_TO                     - full-inquiry email recipient
 //   SWAIN_EMAIL_FROM                   - sender address
+//   GMAIL_REFRESH_TOKEN                - hosted Gmail transport: refresh token
+//   GMAIL_CLIENT_ID                    - hosted Gmail transport: OAuth client id
+//   GMAIL_CLIENT_SECRET                - hosted Gmail transport: OAuth secret
+//                                       All three are required; a partial set is
+//                                       treated as "transport not configured".
 //   TWILIO_ACCOUNT_SID                 - Twilio account sid
 //   TWILIO_AUTH_TOKEN                  - Twilio auth token
 //   SWAIN_SMS_FROM                     - E.164 sender number
@@ -149,6 +170,30 @@ export const config = {
   get rateGlobal() { return intEnv('SWAIN_RATE_GLOBAL', 50); },
   get rateGlobalWindowSeconds() { return intEnv('SWAIN_RATE_GLOBAL_WINDOW_SECONDS', 3600); },
   get notifyEnabled() { return process.env.SWAIN_NOTIFY_ENABLED === 'true'; },
+
+  /**
+   * Hosted Gmail transport credentials (serverless).
+   *
+   * These are the ONLY credentials the hosted runtime needs for the email leg.
+   * They are read here so the transport can be selected automatically instead
+   * of falling through to the Mac-only `gog` path (which cannot work on
+   * Vercel at all).
+   */
+  get gmailRefreshToken() { return process.env.GMAIL_REFRESH_TOKEN || ''; },
+  get gmailClientId() { return process.env.GMAIL_CLIENT_ID || ''; },
+  get gmailClientSecret() { return process.env.GMAIL_CLIENT_SECRET || ''; },
+
+  /**
+   * Dispatch budget for the post-submit drain.
+   *
+   * The drain must never hold the visitor's response and must never be
+   * killed mid-flight: if it were, claimed jobs would be left in 'sending'
+   * with a lease and later be held as 'lease_expired_ambiguous'. So the drain
+   * runs on a wall-clock budget and stops cleanly, leaving remaining jobs
+   * 'pending' for the next trigger.
+   */
+  get dispatchBudgetMs() { return intEnv('SWAIN_DISPATCH_BUDGET_MS', 5000); },
+  get dispatchBatch() { return intEnv('SWAIN_DISPATCH_BATCH', 2); },
 
   /**
    * Retry policy for FAILED (definitively rejected) jobs.

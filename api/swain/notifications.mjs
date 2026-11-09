@@ -16,6 +16,15 @@
 // Requires SWAIN_NOTIFY_ENABLED=true to deliver. Without it, jobs are read and
 // reported but nothing is sent (safe default for staging).
 //
+// The endpoint FAILS CLOSED: if SWAIN_WORKER_TOKEN is not set it returns 503
+// and does nothing, rather than serving any caller.
+//
+// The hosted email transport needs GMAIL_REFRESH_TOKEN + GMAIL_CLIENT_ID +
+// GMAIL_CLIENT_SECRET. The Mac-only `gog` transport is used only when the
+// gog binary is present (i.e. on the local worker) - on a serverless runtime
+// the job fails fast with a named status instead of attempting a call that
+// cannot work.
+//
 // Also usable as a local worker for the email leg, because the Gmail OAuth
 // token used by `gog` lives in the macOS Keychain and cannot reach Vercel:
 //
@@ -25,6 +34,7 @@
 import {
   config, stable, safeEqual, sha256, retryDelaySeconds,
 } from './_lib.mjs';
+import fs from 'node:fs';
 
 const STATE = {
   pending: 'pending', sending: 'sending', accepted: 'accepted',
@@ -113,16 +123,68 @@ async function sendSms(job) {
 
 /**
  * Send one email.
- * Two transports are supported:
- *   1. 'gog'  - local worker, uses the macOS Keychain OAuth token (no new creds)
- *   2. 'gmail_api' - serverless, needs GMAIL_REFRESH_TOKEN + GMAIL_CLIENT_ID/SECRET
- * Returns { state, ref, status, error } with the same semantics as sendSms.
+ *
+ * Two transports:
+ *   1. 'gmail_api' - serverless. Needs GMAIL_REFRESH_TOKEN + GMAIL_CLIENT_ID
+ *      + GMAIL_CLIENT_SECRET (all three, or the transport is not configured).
+ *   2. 'gog'        - local worker only. Uses the macOS Keychain OAuth token.
+ *
+ * Selection order:
+ *   - an explicitly supplied `gmail` object wins;
+ *   - otherwise the hosted credentials are read from the environment;
+ *   - otherwise we fall back to `gog`, but ONLY when we are actually running
+ *     somewhere `gog` can work.
+ *
+ * The fallback is deliberately guarded: on a serverless runtime there is no
+ * `gog` binary and no Keychain, so attempting it would fail obscurely (and
+ * could look like a silent success). Instead the job fails fast with a named
+ * status that says the hosted transport is not configured.
  */
 async function sendEmail(job, { gogBin = '/opt/homebrew/bin/gog', gmail = null } = {}) {
-  if (gmail && gmail.refreshToken) {
-    return sendEmailViaGmailApi(job, gmail);
+  const creds = gmail || gmailCredentialsFromEnv();
+  if (creds && creds.refreshToken) {
+    return sendEmailViaGmailApi(job, creds);
+  }
+  if (!canUseGogFallback()) {
+    return {
+      state: STATE.failed,
+      status: 'hosted_transport_not_configured',
+      error: 'GMAIL_REFRESH_TOKEN / GMAIL_CLIENT_ID / GMAIL_CLIENT_SECRET are not configured; the gog fallback is only available on the local worker.',
+    };
   }
   return sendEmailViaGog(job, gogBin);
+}
+
+/**
+ * Hosted Gmail credentials from the environment, or null when incomplete.
+ * All three are required - a partial set is treated as not configured.
+ */
+export function gmailCredentialsFromEnv() {
+  const refreshToken = config.gmailRefreshToken;
+  const clientId = config.gmailClientId;
+  const clientSecret = config.gmailClientSecret;
+  if (!refreshToken || !clientId || !clientSecret) return null;
+  return { refreshToken, clientId, clientSecret };
+}
+
+/**
+ * True only when the Mac-only `gog` fallback can actually work.
+ *
+ * We detect the local worker by the presence of the gog binary on disk (the
+ * local worker always has it). On Vercel there is no gog and no Keychain, so
+ * the fallback must not be attempted.
+ */
+export function canUseGogFallback() {
+  if (process.env.SWAIN_ALLOW_GOG_FALLBACK === 'true') return true;
+  if (process.env.SWAIN_ALLOW_GOG_FALLBACK === 'false') return false;
+  try {
+    // Synchronous existence check - no execution, no credentials touched.
+    // eslint-disable-next-line no-undef
+    const { existsSync } = fs;
+    return existsSync('/opt/homebrew/bin/gog');
+  } catch {
+    return false;
+  }
 }
 
 async function sendEmailViaGog(job, gogBin) {
@@ -328,9 +390,16 @@ async function refreshInquiryState(inquiryId) {
 /**
  * Process one batch. Returns a summary of per-recipient outcomes.
  */
-export async function processBatch({ limit = 20, gogBin, gmail, allowSend = null } = {}) {
+export async function processBatch({ limit = 20, gogBin, gmail, allowSend = null, budgetMs = null } = {}) {
   const enabled = allowSend === null ? config.notifyEnabled : allowSend;
   const summary = { enabled, processed: [], held: [], failed: [] };
+  // Wall-clock budget for the whole drain. When it is exhausted we stop
+  // CLEANLY - remaining jobs stay claimable (they were never claimed) and the
+  // function is never killed mid-flight, so a job can never be left in
+  // 'sending' by an overrun.
+  const budget = budgetMs === null ? config.dispatchBudgetMs : budgetMs;
+  const deadline = Date.now() + Math.max(0, budget);
+  summary.budget_ms = budget;
 
   if (!config.supabaseUrl || !config.supabaseKey) {
     return { ...summary, error: 'storage_not_configured' };
@@ -370,6 +439,25 @@ export async function processBatch({ limit = 20, gogBin, gmail, allowSend = null
       summary.processed.push({ id: job.id, destination: job.destination, state: 'not_sent_disabled' });
       continue;
     }
+    // Budget check BEFORE sending. If the drain is out of time we release the
+    // job back to the state it had and stop. Releasing (rather than leaving it
+    // 'sending') is what keeps a budget overrun from manufacturing an
+    // ambiguous hold.
+    if (Date.now() >= deadline) {
+      const restoreState = job.prior_state === STATE.failed ? STATE.failed : STATE.pending;
+      await sb('swain_notification_outbox?id=eq.' + job.id, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          state: restoreState,
+          lease_until: null,
+          attempts: (job.attempts || 1) - 1,
+          updated_at: new Date().toISOString(),
+        }),
+      });
+      summary.processed.push({ id: job.id, destination: job.destination, state: 'deferred_budget_exhausted' });
+      summary.budget_exhausted = true;
+      continue;
+    }
     let result;
     if (job.channel === 'sms') result = await sendSms(job);
     else if (job.channel === 'email') result = await sendEmail(job, { gogBin, gmail });
@@ -389,11 +477,25 @@ export async function processBatch({ limit = 20, gogBin, gmail, allowSend = null
 
 export default async function handler(req, res) {
   // The worker endpoint must not be callable by the public.
+  //
+  // FAIL CLOSED: if SWAIN_WORKER_TOKEN is missing, the endpoint is not
+  // configured and must refuse every request. Previously the guard was
+  // `if (expected && ...)`, so an unset token skipped the check entirely and
+  // left the endpoint callable by anyone who found the URL - unacceptable for
+  // an endpoint that can send real email.
   const expected = process.env.SWAIN_WORKER_TOKEN || '';
+  if (!expected) {
+    res.statusCode = 503;
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Cache-Control', 'no-store');
+    res.end(JSON.stringify({ error: 'Worker not configured.' }));
+    return;
+  }
   const provided = req.headers['x-sworker-token'] || (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
-  if (expected && !safeEqual(expected, provided)) {
+  if (!safeEqual(expected, provided)) {
     res.statusCode = 401;
     res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Cache-Control', 'no-store');
     res.end(JSON.stringify({ error: 'Unauthorized.' }));
     return;
   }

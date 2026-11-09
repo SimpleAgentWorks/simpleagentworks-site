@@ -1,4 +1,12 @@
 {
+  "functions": {
+    "api/swain/inquiry.mjs": {
+      "maxDuration": 60
+    },
+    "api/swain/notifications.mjs": {
+      "maxDuration": 60
+    }
+  },
   "redirects": [
     {
       "source": "/(.*)",

@@ -137,10 +137,26 @@ this repo, in chat, or in any report.
 ### Optional
 | variable | purpose | default |
 |---|---|---|
-| `SWAIN_WORKER_TOKEN` | bearer token guarding `POST /api/swain/notifications` | unset (endpoint open — set it) |
+| `SWAIN_WORKER_TOKEN` | bearer token guarding `POST /api/swain/notifications`. **Required for that endpoint** — it now fails CLOSED with 503 when unset, so it is never open to the public. | unset (endpoint refuses) |
 | `SWAIN_NAME_MAX_LEN` / `SWAIN_EMAIL_MAX_LEN` / `SWAIN_MSG_MAX_LEN` | input caps | `120` / `254` / `4000` |
 | `SWAIN_BODY_MAX_BYTES` | request body cap | `12000` |
-| `GMAIL_REFRESH_TOKEN`, `GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET` | only if the email leg moves to Vercel instead of the local worker (see §6) | unset |
+| `SWAIN_DISPATCH_BUDGET_MS` | wall-clock budget for the post-submit drain (it stops cleanly and leaves remaining jobs `pending`) | `5000` |
+| `SWAIN_DISPATCH_BATCH` | jobs handled per drain | `2` |
+| `SWAIN_ALLOW_GOG_FALLBACK` | force the Mac-only `gog` email transport on/off. Unset = used only where the `gog` binary exists (local worker), so a serverless runtime never attempts it. | auto-detect |
+| `SWAIN_MAX_ATTEMPTS` | delivery attempts before a failed job is parked in `held` for review | `3` |
+| `SWAIN_RETRY_BASE_SECONDS` / `SWAIN_RETRY_MAX_SECONDS` | retry backoff for failed jobs | `60` / `3600` |
+| `GMAIL_REFRESH_TOKEN`, `GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET` | **required for hosted (Vercel) email delivery.** All three, or the hosted transport is not configured and the job fails with `hosted_transport_not_configured`. | unset |
+
+### Platform-provided (Vercel, no configuration needed)
+| variable | purpose |
+|---|---|
+| `VERCEL_URL` | this deployment's own host — used for the same-origin allowlist |
+| `VERCEL_PROJECT_PRODUCTION_URL` | the production domain — also allowlisted |
+| `VERCEL_BRANCH_URL` | a branch alias, **only when the platform provides one**. It is NOT present on CLI-created preview deployments, so it must not be relied on. |
+
+Vercel supplies these as bare hostnames with no scheme; the code normalises them to `https://host`.
+Wildcards, paths, queries, fragments, embedded credentials and non-http schemes are rejected, so a
+malformed value is dropped rather than widening the allowlist.
 
 ---
 
