@@ -152,14 +152,21 @@ console.log(JSON.stringify({
 }));
 `);
 
-  // The shared rate limiter is keyed by an HMAC of the client IP, so a
-  // previous run can leave this test's key over its limit. Clear the buckets
-  // first so the capture always succeeds (the buckets contain no user data:
-  // pseudonymous keys with a short TTL).
+  // Rate-limit cleanup must be SCOPED, never global.
+  //
+  // The inquiry endpoint's rate limiter writes exactly two buckets, with
+  // scope values 'swain-inquiry:ip' and 'swain-inquiry:global'. Deleting
+  // WHERE scope STARTS WITH 'swain-inquiry' removes only this endpoint's
+  // buckets and cannot touch any other scope's limits.
+  //
+  // We deliberately do NOT use `key=neq.__none__` (which would wipe EVERY
+  // shared bucket including other users' per-IP limits). We also do not delete
+  // by a computed HMAC key, because the HMAC secret lives only in Vercel's
+  // encrypted store and is not available to the test.
   try {
     const svcKey = key;
     await realFetch(
-      'https://ymawwdgxegvvlblrzqxp.supabase.co/rest/v1/swain_rate_limits?key=neq.__none__',
+      'https://ymawwdgxegvvlblrzqxp.supabase.co/rest/v1/swain_rate_limits?scope=like.swain-inquiry*',
       { method: 'DELETE', headers: { apikey: svcKey, Authorization: 'Bearer ' + svcKey } });
   } catch { /* cleanup is best-effort */ }
 
