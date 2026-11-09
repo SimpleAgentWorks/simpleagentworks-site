@@ -6,9 +6,11 @@
 // Same-origin only. No redirect, no external form branding, no third-party form.
 //
 // Post-submit dispatch: after the capture commits, the notification outbox is
-// drained in the BACKGROUND - the response is written FIRST and the drain
-// continues via Vercel's waitUntil (or, without it, after the response is
-// written). The visitor never waits on a provider. The drain runs on an
+// drained in the BACKGROUND - the response is written FIRST and the drain is
+// handed to Vercel's waitUntil (the documented background-work lifecycle,
+// which keeps the invocation alive after the response is sent). There is no
+// untracked-promise fallback: an un-awaited promise can be frozen when the
+// function freezes, so the drain might never finish. The drain runs on an
 // explicit wall-clock budget (SWAIN_DISPATCH_BUDGET_MS, default 5000ms) and a
 // small batch (SWAIN_DISPATCH_BATCH, default 2); when the budget is spent it
 // stops cleanly and leaves the remaining jobs 'pending' for the next trigger,
@@ -20,6 +22,7 @@ import {
   storageErrorText, normalizeOrigin,
 } from './_lib.mjs';
 import { processBatch } from './notifications.mjs';
+import { waitUntil } from '@vercel/functions';
 
 async function readBody(req) {
   if (req.body !== undefined && req.body !== null) {
@@ -46,10 +49,7 @@ async function readBody(req) {
   return JSON.parse(raw);
 }
 
-export default async function handler(req, res, context) {
-  // Vercel passes a `{ waitUntil }` context to non-Next.js functions. Capture
-  // it so the post-submit drain can run AFTER the response has been written.
-  HANDLER_CONTEXT = context || null;
+export default async function handler(req, res) {
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
     return respond(res, 405, { error: 'Use POST.' });
@@ -136,11 +136,14 @@ export default async function handler(req, res, context) {
   // durable. Drain them now instead of waiting for a scheduled cron.
   //
   // The drain must NOT hold the visitor's response. We write the response
-  // FIRST, then let the drain continue in the background using Vercel's
-  // waitUntil (the platform keeps the invocation alive after the response is
-  // sent, bounded by the function's max duration). Where waitUntil is not
-  // available we fall back to running the drain after the response has been
-  // written - still after the visitor has their answer.
+  // FIRST, then hand the drain to Vercel's waitUntil - the documented
+  // background-work lifecycle, which keeps the invocation alive after the
+  // response is sent (bounded by the function's maxDuration).
+  //
+  // There is deliberately NO untracked-promise fallback: an un-awaited promise
+  // can be frozen when the function freezes, so the drain might never finish.
+  // If waitUntil is unavailable we log it and leave the jobs queued for the
+  // next trigger, which is safe because the outbox is durable.
   //
   // A dispatch problem can never fail the request: the inquiry is already
   // durably saved, so problems are logged, and the durable outbox means the
@@ -148,46 +151,16 @@ export default async function handler(req, res, context) {
   const states = await notificationStates(capture.id).catch(() => []);
   respond(res, 200, { ok: true, id: capture.id, notifications: states });
 
-  const drain = drainNotifications();
-  const waitUntil = getWaitUntil(req);
-  if (waitUntil) {
-    // Fire-and-forget: the platform extends the invocation for this promise.
-    waitUntil(drain);
-  } else {
-    // No platform hook on this runtime: still do not block the response - the
-    // response has already been written above.
-    drain.catch((err) => {
-      console.error('[swain] post-submit dispatch failed:', err && err.message);
-    });
-  }
+  // waitUntil keeps the invocation alive after the response is written.
+  waitUntil(drainNotifications());
   return undefined;
 }
 
 /**
- * Find Vercel's waitUntil hook, if this runtime provides one.
- *
- * Vercel exposes it either as the second argument of the handler (the
- * `{ waitUntil }` context) or via the `@vercel/functions` package. We prefer
- * the context form so no new dependency is required.
- */
-function getWaitUntil(req) {
-  // The context is passed as the second argument; we capture it at call time.
-  const ctx = getHandlerContext();
-  if (ctx && typeof ctx.waitUntil === 'function') {
-    return (promise) => ctx.waitUntil(promise);
-  }
-  return null;
-}
-
-// The handler context is stashed here by the exported handler wrapper.
-let HANDLER_CONTEXT = null;
-function getHandlerContext() { return HANDLER_CONTEXT; }
-
-/**
  * Drain the notification outbox after the response has been written.
  *
- * Never throws - a dispatch failure must not turn a durably-saved inquiry
- * into a user-facing error.
+ * Never rejects - a dispatch failure must not turn a durably-saved inquiry
+ * into a user-facing error, and must not fail the waitUntil promise.
  */
 async function drainNotifications() {
   if (!config.notifyEnabled) {
