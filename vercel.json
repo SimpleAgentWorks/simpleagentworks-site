@@ -7,6 +7,15 @@
       "maxDuration": 60
     }
   },
+  "schedules": {
+    "swain-inquiry-drain": {
+      "schedule": "*/15 * * * *",
+      "path": "/api/swain/notifications",
+      "requestMethod": "POST",
+      "jitter": 15,
+      "timezone": "America/Chicago"
+    }
+  },
   "redirects": [
     {
       "source": "/(.*)",
