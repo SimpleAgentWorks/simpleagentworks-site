@@ -1,4 +1,21 @@
 {
+  "functions": {
+    "api/swain/inquiry.mjs": {
+      "maxDuration": 60
+    },
+    "api/swain/notifications.mjs": {
+      "maxDuration": 60
+    }
+  },
+  "schedules": {
+    "swain-inquiry-drain": {
+      "schedule": "*/15 * * * *",
+      "path": "/api/swain/notifications",
+      "requestMethod": "POST",
+      "jitter": 15,
+      "timezone": "America/Chicago"
+    }
+  },
   "redirects": [
     {
       "source": "/(.*)",
@@ -35,6 +52,19 @@
         {
           "key": "Content-Security-Policy",
           "value": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: https:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self' mailto:"
+        }
+      ]
+    },
+    {
+      "source": "/api/swain/(.*)",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-store, max-age=0"
+        },
+        {
+          "key": "X-Robots-Tag",
+          "value": "noindex, nofollow"
         }
       ]
     }
