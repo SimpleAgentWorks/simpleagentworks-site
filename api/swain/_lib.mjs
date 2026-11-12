@@ -483,15 +483,26 @@ export function buildJobs(inquiry) {
       '',
       'Reply to this email to reply directly to the sender.',
     ].join('\n');
-    jobs.push({
-      channel: 'email',
-      destination: 'jenna_email',
-      recipient: emailTo,
-      subject,
-      body,
+    // SWAIN_EMAIL_TO may list several recipients. Each needs its OWN job:
+    // the outbox has a UNIQUE (inquiry_id, destination) constraint, so two
+    // recipients sharing one destination would collide and only one would be
+    // queued. Splitting them also means each recipient is tracked and
+    // retried independently, which is what the per-recipient state machine
+    // is for.
+    const recipients = emailTo
+      .split(',')
+      .map((r) => r.trim())
+      .filter(Boolean);
+    recipients.forEach((recipient, i) => {
+      jobs.push({
+        channel: 'email',
+        destination: recipients.length === 1 ? 'jenna_email' : `email_${i + 1}`,
+        recipient,
+        subject,
+        body,
+      });
     });
   }
-
   const smsBody = [
     'New Swain Photography inquiry',
     inquiry.name,
