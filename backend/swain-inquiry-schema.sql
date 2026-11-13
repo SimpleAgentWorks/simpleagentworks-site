@@ -24,6 +24,12 @@ create table if not exists public.swain_inquiries (
   name           text not null,
   email          text not null,
   message        text not null,
+  -- Optional phone number. NULL when the visitor did not provide one.
+  phone          text,
+  -- Optional marketing opt-in: 'yes' | 'no' | NULL (not provided).
+  sms_opt_in     text check (sms_opt_in is null or sms_opt_in in ('yes','no')),
+  -- Server-side timestamp of the opt-in answer. Never supplied by the client.
+  sms_opt_in_at  timestamptz,
   source         text not null default 'swain-photography-preview',
   created_at     timestamptz not null default now(),
   -- 'captured' => durably stored, notifications not yet completed.
@@ -137,7 +143,10 @@ create or replace function public.swain_capture_inquiry(
   p_email text,
   p_message text,
   p_source text default 'swain-photography-preview',
-  p_jobs jsonb default '[]'::jsonb
+  p_jobs jsonb default '[]'::jsonb,
+  p_phone text default null,
+  p_sms_opt_in text default null,
+  p_sms_opt_in_at timestamptz default null
 ) returns jsonb
 language plpgsql
 security definer
@@ -150,8 +159,11 @@ declare
 begin
   -- Capture the inquiry. ON CONFLICT DO NOTHING makes this an atomic
   -- insert-or-detect, never a lookup-then-append race.
-  insert into public.swain_inquiries (id, content_hash, name, email, message, source)
-  values (p_id, p_content_hash, p_name, p_email, p_message, p_source)
+  insert into public.swain_inquiries
+    (id, content_hash, name, email, message, source, phone, sms_opt_in, sms_opt_in_at)
+  values
+    (p_id, p_content_hash, p_name, p_email, p_message, p_source,
+     nullif(p_phone, ''), p_sms_opt_in, p_sms_opt_in_at)
   on conflict (id) do nothing;
 
   get diagnostics v_created = row_count;

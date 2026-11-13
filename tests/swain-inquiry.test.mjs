@@ -135,6 +135,7 @@ try {
     submissionId: randomUUID(), clientId: 'swain-photography',
     name: 'Test Person', email: 'tester@example.com',
     message: 'A couples session by the lake.', source: 'swain-photography-preview',
+    phone: '(630) 555-0123', smsOptIn: 'yes',
   };
   const jobs = buildJobs(inv);
   check('job set built (email + 2 SMS)', jobs.length === 3, JSON.stringify(jobs.map(j => j.destination)));
@@ -146,9 +147,12 @@ try {
   check('capture reports created=true', cap.created === true, JSON.stringify(cap));
   check('capture returns the submission id', cap.id === inv.submissionId);
 
-  const rows = await q('select id, content_hash, name, email, notify_state from public.swain_inquiries where id=$1', [inv.submissionId]);
+  const rows = await q('select id, content_hash, name, email, notify_state, phone, sms_opt_in, sms_opt_in_at from public.swain_inquiries where id=$1', [inv.submissionId]);
   check('inquiry row persisted', rows.length === 1, 'rows=' + rows.length);
-  check('content hash stored', rows[0] && rows[0].content_hash === contentHash({ name: inv.name, email: inv.email, message: inv.message }));
+  check('content hash stored', rows[0] && rows[0].content_hash === contentHash({ name: inv.name, email: inv.email, message: inv.message, phone: inv.phone, smsOptIn: inv.smsOptIn }));
+  check('phone persisted', rows[0] && rows[0].phone === inv.phone, rows[0] && rows[0].phone);
+  check('opt-in answer persisted', rows[0] && rows[0].sms_opt_in === 'yes', rows[0] && rows[0].sms_opt_in);
+  check('opt-in timestamp persisted (server-set)', rows[0] && !!rows[0].sms_opt_in_at, rows[0] && String(rows[0].sms_opt_in_at));
   check('notify_state starts at captured', rows[0] && rows[0].notify_state === 'captured');
 
   const outbox = await q('select destination, state from public.swain_notification_outbox where inquiry_id=$1 order by destination', [inv.submissionId]);
@@ -186,7 +190,7 @@ try {
   const inv4 = { ...inv, submissionId: id4, message: 'Atomicity probe' };
   await q(
     `insert into public.swain_inquiries (id, content_hash, name, email, message, source)
-     values ($1,$2,$3,$4,$5,$6)`, [id4, contentHash({ name: inv4.name, email: inv4.email, message: inv4.message }),
+     values ($1,$2,$3,$4,$5,$6)`, [id4, contentHash({ name: inv4.name, email: inv4.email, message: inv4.message, phone: inv4.phone, smsOptIn: inv4.smsOptIn }),
       inv4.name, inv4.email, inv4.message, inv4.source]);
   const orphanJobs = await q('select id from public.swain_notification_outbox where inquiry_id=$1', [id4]);
   check('manual inquiry insert alone creates NO jobs (jobs come from the same txn)', orphanJobs.length === 0);

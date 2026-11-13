@@ -66,6 +66,7 @@
 //   SWAIN_SMS_TO_JENNA                 - Jenna's alert number (E.164)
 //   SWAIN_SMS_TO_JOHN                  - John's alert number (E.164)
 //   SWAIN_EMAIL_MAX_LEN / SWAIN_MSG_MAX_LEN / SWAIN_NAME_MAX_LEN
+//   SWAIN_PHONE_MAX_LEN                 - phone number cap (default 32)
 //   SWAIN_BODY_MAX_BYTES               - request body cap (default 12000)
 
 import crypto from 'node:crypto';
@@ -217,6 +218,7 @@ export const config = {
   get nameMax() { return intEnv('SWAIN_NAME_MAX_LEN', 120); },
   get emailMax() { return intEnv('SWAIN_EMAIL_MAX_LEN', 254); },
   get msgMax() { return intEnv('SWAIN_MSG_MAX_LEN', 4000); },
+  get phoneMax() { return intEnv('SWAIN_PHONE_MAX_LEN', 32); },
   get bodyMaxBytes() { return intEnv('SWAIN_BODY_MAX_BYTES', 12000); },
 };
 
@@ -432,14 +434,65 @@ export function validateInquiry(raw) {
   };
 
   const name = clean('name', config.nameMax, true, 'name');
-  const email = clean('email', config.emailMax, true, 'email');
+  // Email is required on this form, BUT the consent rule below can ask for a
+  // phone number instead. So we do not fail on a missing email yet - we
+  // collect it, apply the consent rule, and only then decide.
+  const email = clean('email', config.emailMax, false, 'email');
   const message = clean('message', config.msgMax, true, 'message');
 
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-    throw badRequest('Please check the email address.');
+  if (email) {
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      throw badRequest('Please check the email address.');
+    }
+    if (/[\r\n]/.test(email)) {
+      throw badRequest('Please check the email address.');
+    }
   }
-  if (/[\r\n]/.test(email)) {
-    throw badRequest('Please check the email address.');
+
+  // --- optional phone -------------------------------------------------
+  // Optional. Digits, spaces and the usual phone punctuation only, so a
+  // value can never smuggle a header break or markup into the email/SMS.
+  const phone = clean('phone', config.phoneMax, false, 'phone');
+  if (phone && !/^[+()\-.\s\d]{7,32}$/.test(phone)) {
+    throw badRequest('Please check the phone number - digits, spaces, +, -, ( ) and . only.');
+  }
+  const phoneDigits = phone ? phone.replace(/\D/g, '') : '';
+  if (phone && phoneDigits.length < 7) {
+    throw badRequest('Please check the phone number - it looks too short.');
+  }
+
+  // --- optional marketing opt-in --------------------------------------
+  // The visitor may tick "I agree to receive text or email messages about my
+  // inquiry" (TCPA-style consent). Unchecked by default. We record a plain
+  // 'yes' / 'no' plus the SERVER-side timestamp.
+  //
+  // 'no' is stored explicitly when the client reports the box was visible and
+  // unticked; a client that omits the field entirely stores null (unknown).
+  let smsOptIn = null;
+  const rawOptIn = raw.smsOptIn;
+  if (rawOptIn !== undefined && rawOptIn !== null && rawOptIn !== '') {
+    if (typeof rawOptIn === 'boolean') {
+      smsOptIn = rawOptIn ? 'yes' : 'no';
+    } else if (rawOptIn === 'yes' || rawOptIn === 'no') {
+      smsOptIn = rawOptIn;
+    } else if (rawOptIn === 'true' || rawOptIn === 'false') {
+      smsOptIn = rawOptIn === 'true' ? 'yes' : 'no';
+    } else {
+      throw badRequest('Please check the consent answer.');
+    }
+  }
+
+  // Consent to be contacted requires a way to contact them. If they ticked
+  // the box but gave us neither a phone nor an email, we must ask for one
+  // rather than silently storing an unusable consent.
+  if (smsOptIn === 'yes' && !phone && !email) {
+    throw badRequest('Please add a phone number or email address so we can contact you about your inquiry.');
+  }
+
+  // Without consent, an email address is still required - this is how Jenna
+  // replies with the quote. A phone number alone is not enough to answer.
+  if (!email) {
+    throw badRequest('Please complete the email field.');
   }
 
   return {
@@ -448,6 +501,8 @@ export function validateInquiry(raw) {
     name,
     email,
     message,
+    phone,
+    smsOptIn,
     source: SOURCE,
   };
 }
@@ -469,17 +524,32 @@ export function buildJobs(inquiry) {
   const emailTo = config.emailTo;
   if (emailTo) {
     const subject = `New Swain Photography inquiry | ${inquiry.name}`;
+    // Opt-in answer: 'yes' / 'no' / unknown, with the server-side timestamp.
+    // 'yes' means the visitor explicitly agreed to be contacted about this
+    // inquiry by text or email. 'no' means the box was left unticked.
+    const optInText =
+      inquiry.smsOptIn === 'yes'
+        ? 'YES'
+        : inquiry.smsOptIn === 'no'
+          ? 'NO'
+          : 'Not provided';
+    const optInWhen = inquiry.smsOptInAt ? inquiry.smsOptInAt : 'not recorded';
     const body = [
       'A new inquiry was submitted on the Swain Photography preview.',
       '',
       'CONTACT',
       'Name: ' + inquiry.name,
       'Email: ' + inquiry.email,
+      'Phone: ' + (inquiry.phone || 'not provided'),
       '',
       'DETAILS',
       inquiry.message,
       '',
       'Reference: ' + inquiry.submissionId,
+      '',
+      'SMS/EMAIL OPT-IN',
+      'Agreed to receive text or email messages: ' + optInText,
+      'Opt-in timestamp: ' + optInWhen,
       '',
       'Reply to this email to reply directly to the sender.',
     ].join('\n');
@@ -507,6 +577,7 @@ export function buildJobs(inquiry) {
     'New Swain Photography inquiry',
     inquiry.name,
     inquiry.email,
+    inquiry.phone || 'no phone',
     inquiry.message.slice(0, 180),
     'Ref ' + ref,
   ].join('\n');
@@ -534,12 +605,22 @@ export async function captureInquiry(inquiry, jobs) {
   }
   const payload = {
     p_id: inquiry.submissionId,
-    p_content_hash: contentHash({ name: inquiry.name, email: inquiry.email, message: inquiry.message }),
+    p_content_hash: contentHash({
+      name: inquiry.name,
+      email: inquiry.email,
+      message: inquiry.message,
+      phone: inquiry.phone,
+      smsOptIn: inquiry.smsOptIn,
+    }),
     p_name: inquiry.name,
     p_email: inquiry.email,
     p_message: inquiry.message,
     p_source: inquiry.source,
     p_jobs: jobs,
+    p_phone: inquiry.phone || null,
+    p_sms_opt_in: inquiry.smsOptIn,
+    // Server-side timestamp: the visitor cannot forge when they opted in.
+    p_sms_opt_in_at: inquiry.smsOptIn ? new Date().toISOString() : null,
   };
   const res = await sb('rpc/swain_capture_inquiry', {
     method: 'POST',

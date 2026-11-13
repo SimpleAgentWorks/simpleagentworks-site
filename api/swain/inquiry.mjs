@@ -97,6 +97,13 @@ export default async function handler(req, res) {
     return respond(res, err.status || 400, { error: err.publicMessage || err.message || 'Please check your details.' });
   }
 
+  // Stamp the opt-in timestamp on the SERVER before the email body is built,
+  // so the email and the stored record carry the SAME timestamp. The client
+  // never supplies it.
+  if (inquiry.smsOptIn) {
+    inquiry.smsOptInAt = new Date().toISOString();
+  }
+
   if (!storageConfigured()) {
     // Never show a false success when we cannot durably store the inquiry.
     return respond(res, 503, {
