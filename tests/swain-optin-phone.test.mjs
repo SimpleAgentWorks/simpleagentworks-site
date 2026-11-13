@@ -197,14 +197,32 @@ try {
   check('the queued email body carries the opt-in answer', jobRows[0] && /messages: YES/.test(jobRows[0].body));
 
   // ---------------------------------------------------------- 7. no-phone capture
-  section('7. Capture with no phone and no opt-in still works');
-  await reset();
+  section('7. Capture with no phone and no opt-in still works');  await reset();
   const plainInv = validateInquiry(base());
   const plainCap = await lib.captureInquiry(plainInv, buildJobs(plainInv));
   check('capture created without a phone', plainCap.created === true);
   const plainRows = await q('select phone, sms_opt_in from public.swain_inquiries where id=$1', [plainInv.submissionId]);
   check('phone is null in the DB', plainRows[0] && plainRows[0].phone === null, plainRows[0] && JSON.stringify(plainRows[0].phone));
   check('opt-in is null in the DB', plainRows[0] && plainRows[0].sms_opt_in === null);
+
+  // ---------------------------------------------------------- 8. review-copy safety
+  section('8. The review copy NEVER produces a notification job');
+  const reviewInv = validateInquiry(base({ phone: '630-555-0123', smsOptIn: 'yes', source: 'swain-photography-review-copy' }));
+  check('the review source is honoured', reviewInv.source === 'swain-photography-review-copy', reviewInv.source);
+  const reviewJobs = buildJobs(reviewInv);
+  check('NO email job for the review copy', !reviewJobs.some((j) => j.channel === 'email'), JSON.stringify(reviewJobs.map((j) => j.destination)));
+  check('NO sms job for the review copy', !reviewJobs.some((j) => j.channel === 'sms'), JSON.stringify(reviewJobs.map((j) => j.destination)));
+  check('the review copy produces ZERO jobs', reviewJobs.length === 0, String(reviewJobs.length));
+
+  // A normal inquiry STILL produces its jobs (the guard is narrow).
+  const liveInv = validateInquiry(base({ phone: '630-555-0123', smsOptIn: 'yes' }));
+  const liveJobs = buildJobs(liveInv);
+  check('a normal inquiry still produces the email job', liveJobs.some((j) => j.channel === 'email'));
+
+  // An unknown source falls back to the default (cannot be used to bypass).
+  const weird = validateInquiry(base({ source: 'something-else' }));
+  check('an unknown source falls back to the default', weird.source === 'swain-photography-preview', weird.source);
+  check('an unknown source still produces jobs', buildJobs(weird).some((j) => j.channel === 'email'));
 
   await reset();
 } catch (err) {

@@ -503,7 +503,10 @@ export function validateInquiry(raw) {
     message,
     phone,
     smsOptIn,
-    source: SOURCE,
+    // The source is server-controlled. Only the known review-copy source may
+    // be requested by the client; anything else falls back to the default.
+    // The review copy is what suppresses notification jobs (see buildJobs).
+    source: raw.source === 'swain-photography-review-copy' ? 'swain-photography-review-copy' : SOURCE,
   };
 }
 
@@ -522,7 +525,17 @@ export function buildJobs(inquiry) {
   const jobs = [];
 
   const emailTo = config.emailTo;
-  if (emailTo) {
+
+  // REVIEW BUILD SAFETY: the review copy of the form (used only while John
+  // reviews the phone + opt-in change) posts with this source. It is captured
+  // so the flow can be exercised, but it NEVER produces a notification job,
+  // so a review submission can never email Jenna or info@.
+  //
+  // This is checked on the SERVER, not in the browser, so it cannot be
+  // bypassed by editing the page.
+  const isReviewCopy = inquiry.source === 'swain-photography-review-copy';
+
+  if (emailTo && !isReviewCopy) {
     const subject = `New Swain Photography inquiry | ${inquiry.name}`;
     // Opt-in answer: 'yes' / 'no' / unknown, with the server-side timestamp.
     // 'yes' means the visitor explicitly agreed to be contacted about this
@@ -582,10 +595,10 @@ export function buildJobs(inquiry) {
     'Ref ' + ref,
   ].join('\n');
 
-  if (config.smsToJenna) {
+  if (config.smsToJenna && !isReviewCopy) {
     jobs.push({ channel: 'sms', destination: 'jenna_sms', recipient: config.smsToJenna, subject: null, body: smsBody });
   }
-  if (config.smsToJohn) {
+  if (config.smsToJohn && !isReviewCopy) {
     jobs.push({ channel: 'sms', destination: 'john_sms', recipient: config.smsToJohn, subject: null, body: smsBody });
   }
   return jobs;
