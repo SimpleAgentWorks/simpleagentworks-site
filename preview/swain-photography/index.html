@@ -105,22 +105,6 @@
   /* honeypot: hidden from humans, visible to bots */
   .hp-field{position:absolute!important;left:-9999px!important;top:auto!important;width:1px!important;height:1px!important;overflow:hidden!important}
   .field-invalid input,.field-invalid textarea{border-color:#b4443a}
-  /* optional marker + phone field */
-  .optional-note{font-size:12px;color:var(--muted);letter-spacing:.02em;text-transform:none;margin:-4px 0 8px}
-  input[type=tel]{-webkit-appearance:none;appearance:none}
-  /* consent checkbox: tap target stays >=44px on mobile */
-  .consent{display:flex;gap:14px;align-items:flex-start;padding:14px 0 0}
-  .consent input[type=checkbox]{flex:0 0 auto;width:22px;height:22px;min-width:22px;margin:1px 0 0;border:1px solid var(--line);border-radius:5px;background:transparent;appearance:none;-webkit-appearance:none;cursor:pointer;position:relative;transition:border-color .2s,background .2s}
-  .consent input[type=checkbox]:focus{outline:2px solid var(--sky);outline-offset:2px}
-  .consent input[type=checkbox]:checked{background:var(--sky);border-color:var(--sky)}
-  .consent input[type=checkbox]:checked::after{content:"";position:absolute;left:7px;top:3px;width:5px;height:10px;border:solid #fff;border-width:0 2px 2px 0;transform:rotate(45deg)}
-  .consent-text{font-size:14px;line-height:1.55;color:var(--muted);letter-spacing:0;text-transform:none;margin:0}
-  .consent-text b{color:var(--ink);font-weight:500}
-  .consent .field-invalid input[type=checkbox]{border-color:#b4443a}
-  @media (max-width:520px){
-    .consent{gap:12px}
-    .consent-text{font-size:13.5px}
-  }
 
   footer{border-top:1px solid var(--line);padding:34px 24px;display:flex;flex-wrap:wrap;gap:14px;justify-content:space-between;align-items:center;font-size:13px;color:var(--muted)}
   footer .brand{font-family:'Fraunces',serif;font-size:16px;color:var(--ink)}
@@ -229,17 +213,8 @@
       <input id="email" name="email" type="email" placeholder="you@example.com" autocomplete="email" maxlength="254">
     </div>
     <div>
-      <label for="phone">Phone</label>
-      <p class="optional-note">Optional</p>
-      <input id="phone" name="phone" type="tel" placeholder="(630) 555-0123" autocomplete="tel" inputmode="tel" maxlength="32">
-    </div>
-    <div>
       <label for="msg">What are we capturing?</label>
       <textarea id="msg" name="message" placeholder="A couple's session by the lake in early June, a graduation party, a new puppy..." maxlength="4000"></textarea>
-    </div>
-    <div class="consent">
-      <input id="sms_opt_in" name="smsOptIn" type="checkbox" value="yes">
-      <label class="consent-text" for="sms_opt_in">I agree to receive text or email messages from Swain Photography about my inquiry. Msg and data rates may apply. Reply <b>STOP</b> to opt out.</label>
     </div>
     <!-- honeypot: humans never see this; bots that fill it are silently discarded -->
     <div class="hp-field" aria-hidden="true">
@@ -283,8 +258,6 @@
   var status=document.getElementById('inquiry-status');
   var nameEl=document.getElementById('name');
   var emailEl=document.getElementById('email');
-  var phoneEl=document.getElementById('phone');
-  var optInEl=document.getElementById('sms_opt_in');
   var msgEl=document.getElementById('msg');
   var hpEl=document.getElementById('company_website');
   var submissionId=null;
@@ -315,36 +288,11 @@
 
     var name=(nameEl.value||'').trim();
     var email=(emailEl.value||'').trim();
-    var phone=(phoneEl?phoneEl.value:'').trim();
     var msg=(msgEl.value||'').trim();
-    var optedIn=!!(optInEl&&optInEl.checked);
     var bad=false;
     markInvalid(nameEl,!name);markInvalid(emailEl,!email||!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email));markInvalid(msgEl,!msg);
     if(!name||!email||!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)||!msg){bad=true;}
-
-    // Optional phone: only flagged when it is present AND malformed.
-    var phoneBad=false;
-    if(phone){
-      var digits=phone.replace(/\D/g,'');
-      phoneBad=!/^[+()\-.\s\d]{7,32}$/.test(phone)||digits.length<7;
-    }
-    markInvalid(phoneEl,phoneBad);
-    if(phoneBad)bad=true;
-
-    // Consent requires a way to reach them. Email is required on this form,
-    // so the server-side rule is always satisfied here; we still guard it so
-    // the visitor gets an immediate, friendly message.
-    var consentBad=false;
-    if(optedIn&&!phone&&!email){consentBad=true;}
-    if(optInEl)markInvalid(optInEl,consentBad);
-    if(consentBad)bad=true;
-
-    if(bad){
-      var msgText='Please complete your name, a valid email, and a short description.';
-      if(phoneBad)msgText='Please check the phone number.';
-      else if(consentBad)msgText='Please add a phone number or email address so we can contact you about your inquiry.';
-      setStatus('err',msgText);return;
-    }
+    if(bad){setStatus('err','Please complete your name, a valid email, and a short description.');return;}
 
     // Reuse the same id for every retry of the same content.
     if(!submissionId)submissionId=newId();
@@ -363,8 +311,6 @@
         submissionId:submissionId,
         name:name,
         email:email,
-        phone:phone,
-        smsOptIn:optedIn?'yes':'no',
         message:msg,
         hp:hpEl?(hpEl.value||''):''
       })
