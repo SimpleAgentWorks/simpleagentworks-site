@@ -12,6 +12,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,600&family=Outfit:wght@300;400;500;600&display=swap" rel="stylesheet">
 
 <style>
+  <style>
   :root{
     --paper:#faf7f1;
     --ink:#15222c;
@@ -24,6 +25,14 @@
   html{scroll-behavior:smooth}
   body{background:var(--paper);color:var(--ink);font-family:'Outfit',sans-serif;-webkit-font-smoothing:antialiased;overflow-x:hidden}
   h1,h2,h3,.display{font-family:'Fraunces',serif}
+  /* Fraunces' optical-size axis (opsz) makes a large display "J" grow a
+     flared, swash-like tail (seen in "Hi, I'm Jenna"). Pinning opsz to its
+     minimum gives a plain, clean J while keeping the same typeface and the
+     rest of the design untouched.
+     Applied to EVERY Fraunces heading so the look stays consistent, and to
+     the "Jenna Swain" signature too (it is italic Fraunces, so it gets the
+     same treatment for consistency). */
+  h1,h2,h3,.display,.about .sig,.marquee span{font-variation-settings:"opsz" 9}
 
   /* ---------- curtain hero (opens once on load) ---------- */
   .hero{position:relative;height:100dvh;min-height:560px;overflow:hidden}
@@ -63,6 +72,10 @@
   .section-head p{margin-top:14px;color:var(--muted);font-size:17px;line-height:1.6}
   .flow{display:flex;gap:20px;overflow-x:auto;scroll-snap-type:x mandatory;padding:10px 6vw 30px;-webkit-overflow-scrolling:touch}
   .flow::-webkit-scrollbar{display:none}
+  /* Auto-advance is driven by JS (it must pause on hover/touch/focus), so the
+     browser's native smooth scrolling is enabled only while the script is
+     actually animating. The script sets scroll-behavior on the element it
+     needs and removes it again, so a manual flick keeps the native feel. */
   .card{flex:0 0 auto;width:min(72vw,420px);scroll-snap-align:center}
   .card img{width:100%;height:520px;object-fit:cover;border-radius:14px;display:block}
   .card figcaption{margin-top:12px;font-size:14px;color:var(--muted);letter-spacing:.04em}
@@ -105,6 +118,22 @@
   /* honeypot: hidden from humans, visible to bots */
   .hp-field{position:absolute!important;left:-9999px!important;top:auto!important;width:1px!important;height:1px!important;overflow:hidden!important}
   .field-invalid input,.field-invalid textarea{border-color:#b4443a}
+  /* optional marker + phone field */
+  .optional-note{font-size:12px;color:var(--muted);letter-spacing:.02em;text-transform:none;margin:-4px 0 8px}
+  input[type=tel]{-webkit-appearance:none;appearance:none}
+  /* consent checkbox: tap target stays >=44px on mobile */
+  .consent{display:flex;gap:14px;align-items:flex-start;padding:14px 0 0}
+  .consent input[type=checkbox]{flex:0 0 auto;width:22px;height:22px;min-width:22px;margin:1px 0 0;border:1px solid var(--line);border-radius:5px;background:transparent;appearance:none;-webkit-appearance:none;cursor:pointer;position:relative;transition:border-color .2s,background .2s}
+  .consent input[type=checkbox]:focus{outline:2px solid var(--sky);outline-offset:2px}
+  .consent input[type=checkbox]:checked{background:var(--sky);border-color:var(--sky)}
+  .consent input[type=checkbox]:checked::after{content:"";position:absolute;left:7px;top:3px;width:5px;height:10px;border:solid #fff;border-width:0 2px 2px 0;transform:rotate(45deg)}
+  .consent-text{font-size:14px;line-height:1.55;color:var(--muted);letter-spacing:0;text-transform:none;margin:0}
+  .consent-text b{color:var(--ink);font-weight:500}
+  .consent .field-invalid input[type=checkbox]{border-color:#b4443a}
+  @media (max-width:520px){
+    .consent{gap:12px}
+    .consent-text{font-size:13.5px}
+  }
 
   footer{border-top:1px solid var(--line);padding:34px 24px;display:flex;flex-wrap:wrap;gap:14px;justify-content:space-between;align-items:center;font-size:13px;color:var(--muted)}
   footer .brand{font-family:'Fraunces',serif;font-size:16px;color:var(--ink)}
@@ -162,12 +191,15 @@
     <figure class="card"><img src="photos/g6.jpg" alt="Goat with an orange toy"><figcaption>Farm friends</figcaption></figure>
     <figure class="card"><img src="photos/g7.jpg" alt="Kayaker on the river between towers"><figcaption>On the river</figcaption></figure>
     <figure class="card"><img src="photos/g8.jpg" alt="Marsh boardwalk with the Chicago skyline"><figcaption>Marsh trails, big sky</figcaption></figure>
+    <figure class="card"><img src="photos/lake-couple.jpg" alt="A couple embracing at the edge of a calm lake at sunset"><figcaption>Quiet water, golden hour</figcaption></figure>
+    <figure class="card"><img src="photos/hands-tattoo.jpg" alt="Two hands held together, a cursive tattoo visible on the wrist"><figcaption>Held hands</figcaption></figure>
+    <figure class="card"><img src="photos/mounted-police.jpg" alt="Mounted officers on horseback lined up against the Chicago skyline"><figcaption>On the street</figcaption></figure>
   </div>
 </section>
 
 <!-- ABOUT -->
 <section class="about">
-  <img src="photos/about.jpg" alt="Bicycle by Lake Michigan at sunset">
+  <img src="photos/jenna-woods.jpg" alt="Jenna standing on a wooded trail in warm evening light">
   <div>
     <div class="tag">About</div>
     <h2>Hi, I'm Jenna</h2>
@@ -213,8 +245,17 @@
       <input id="email" name="email" type="email" placeholder="you@example.com" autocomplete="email" maxlength="254">
     </div>
     <div>
+      <label for="phone">Phone</label>
+      <p class="optional-note">Optional</p>
+      <input id="phone" name="phone" type="tel" placeholder="(630) 555-0123" autocomplete="tel" inputmode="tel" maxlength="32">
+    </div>
+    <div>
       <label for="msg">What are we capturing?</label>
       <textarea id="msg" name="message" placeholder="A couple's session by the lake in early June, a graduation party, a new puppy..." maxlength="4000"></textarea>
+    </div>
+    <div class="consent">
+      <input id="sms_opt_in" name="smsOptIn" type="checkbox" value="yes">
+      <label class="consent-text" for="sms_opt_in">I agree to receive text or email messages from Swain Photography about my inquiry. Msg and data rates may apply. Reply <b>STOP</b> to opt out.</label>
     </div>
     <!-- honeypot: humans never see this; bots that fill it are silently discarded -->
     <div class="hp-field" aria-hidden="true">
@@ -258,6 +299,8 @@
   var status=document.getElementById('inquiry-status');
   var nameEl=document.getElementById('name');
   var emailEl=document.getElementById('email');
+  var phoneEl=document.getElementById('phone');
+  var optInEl=document.getElementById('sms_opt_in');
   var msgEl=document.getElementById('msg');
   var hpEl=document.getElementById('company_website');
   var submissionId=null;
@@ -288,11 +331,36 @@
 
     var name=(nameEl.value||'').trim();
     var email=(emailEl.value||'').trim();
+    var phone=(phoneEl?phoneEl.value:'').trim();
     var msg=(msgEl.value||'').trim();
+    var optedIn=!!(optInEl&&optInEl.checked);
     var bad=false;
     markInvalid(nameEl,!name);markInvalid(emailEl,!email||!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email));markInvalid(msgEl,!msg);
     if(!name||!email||!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)||!msg){bad=true;}
-    if(bad){setStatus('err','Please complete your name, a valid email, and a short description.');return;}
+
+    // Optional phone: only flagged when it is present AND malformed.
+    var phoneBad=false;
+    if(phone){
+      var digits=phone.replace(/\D/g,'');
+      phoneBad=!/^[+()\-.\s\d]{7,32}$/.test(phone)||digits.length<7;
+    }
+    markInvalid(phoneEl,phoneBad);
+    if(phoneBad)bad=true;
+
+    // Consent requires a way to reach them. Email is required on this form,
+    // so the server-side rule is always satisfied here; we still guard it so
+    // the visitor gets an immediate, friendly message.
+    var consentBad=false;
+    if(optedIn&&!phone&&!email){consentBad=true;}
+    if(optInEl)markInvalid(optInEl,consentBad);
+    if(consentBad)bad=true;
+
+    if(bad){
+      var msgText='Please complete your name, a valid email, and a short description.';
+      if(phoneBad)msgText='Please check the phone number.';
+      else if(consentBad)msgText='Please add a phone number or email address so we can contact you about your inquiry.';
+      setStatus('err',msgText);return;
+    }
 
     // Reuse the same id for every retry of the same content.
     if(!submissionId)submissionId=newId();
@@ -311,6 +379,8 @@
         submissionId:submissionId,
         name:name,
         email:email,
+        phone:phone,
+        smsOptIn:optedIn?'yes':'no',
         message:msg,
         hp:hpEl?(hpEl.value||''):''
       })
@@ -340,6 +410,152 @@
       sending=false;
     });
   });
+})();
+</script>
+<script>
+/* Gallery auto-advance ("The work" - Lake light and city lines).
+ *
+ * Behaviour John asked for:
+ *   - the gallery scrolls RIGHT on its own, slowly, and loops
+ *   - it PAUSES on hover, on touch, and on keyboard focus
+ *   - manual scrolling and swiping still work (native scroll is never hijacked)
+ *   - prefers-reduced-motion: reduce => NO auto-scroll at all
+ *
+ * Design notes:
+ *   - This is a TIMED advance, not a continuous transform animation. The
+ *     gallery is a native scroll-snap container, so moving scrollLeft keeps
+ *     the snapping, the momentum and the swipe behaviour exactly as they are
+ *     today. A CSS transform loop would have to fight the native scrolling.
+ *   - We never call preventDefault on touch or wheel events, so swiping and
+ *     trackpad scrolling are untouched.
+ *   - We only ADD scroll-behavior:'smooth' for the moment we animate, then
+ *     remove it, so a manual flick feels native.
+ */
+(function(){
+  var flow=document.querySelector('.flow');
+  if(!flow)return;
+
+  var INTERVAL=4500;      // ms between advances
+  var RESUME_DELAY=1200;  // ms of stillness before auto-advance resumes
+  var reduced=window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if(reduced)return;      // no auto-scroll for these users, full stop
+
+  var timer=null;
+  var resumeTimer=null;
+  var animating=false;
+  var visible=true;
+  var focused=false;
+  var hovering=false;
+  var touching=false;
+  var userInteracted=false; // sticky: the visitor has taken control
+
+  var cards=flow.querySelectorAll('.card');
+  if(!cards.length)return;
+
+  function isBusy(){
+    return hovering||touching||focused||!visible||userInteracted||animating;
+  }
+
+  function clearTimers(){
+    if(timer){clearTimeout(timer);timer=null;}
+    if(resumeTimer){clearTimeout(resumeTimer);resumeTimer=null;}
+  }
+
+  function schedule(){
+    clearTimers();
+    if(isBusy())return;
+    timer=setTimeout(advance,INTERVAL);
+  }
+
+  /* Advance to the next card; wrap around to the first one at the end. */
+  function advance(){
+    timer=null;
+    if(isBusy())return;
+
+    var step=cards[1] ? cards[1].offsetLeft-cards[0].offsetLeft : cards[0].offsetWidth;
+    var max=flow.scrollWidth-flow.clientWidth;
+    var next=flow.scrollLeft+step;
+
+    markSelfScroll();
+
+    // Loop: when the next step would run past the end, jump back to the start.
+    if(next>=max-2){
+      flow.scrollTo({left:0,behavior:'smooth'});
+      animating=true;
+      setTimeout(function(){animating=false;schedule();},1100);
+      return;
+    }
+
+    flow.scrollTo({left:next,behavior:'smooth'});
+    animating=true;
+    setTimeout(function(){animating=false;schedule();},900);
+  }
+
+  /* The visitor took control: pause auto-advance from now on. */
+  function takeControl(){
+    userInteracted=true;
+    clearTimers();
+  }
+
+  /* Any real interaction stops the automatic movement and hands control to
+     the visitor. Touch and wheel are NOT prevented - the native gesture
+     keeps working exactly as before. */
+  flow.addEventListener('wheel',takeControl,{passive:true});
+  flow.addEventListener('touchstart',function(){
+    touching=true;takeControl();
+  },{passive:true});
+  flow.addEventListener('touchend',function(){
+    touching=false;
+  },{passive:true});
+  flow.addEventListener('touchcancel',function(){touching=false;},{passive:true});
+
+  /* A manual scroll (scrollbar drag, keyboard, scroll-snap landing) also
+     pauses it.
+
+     We distinguish a USER scroll from OUR OWN scroll: our animation always
+     moves in a known direction and we flag it with a short-lived marker. A
+     plain 'scroll' event with no marker is treated as user input.
+
+     Without this, parking the carousel (or any programmatic scroll) would
+     permanently disable auto-advance. */
+  var selfScrollUntil=0;
+  function markSelfScroll(){selfScrollUntil=Date.now()+1200;}
+  flow.addEventListener('scroll',function(){
+    if(animating||Date.now()<selfScrollUntil)return;
+    if(!userInteracted)takeControl();
+  },{passive:true});
+
+  /* Keyboard support: the gallery is not focusable by default, so a keyboard
+     user has no way to reach it. Make it focusable and scrollable, and pause
+     while they have focus inside it. */
+  flow.setAttribute('tabindex','0');
+  flow.setAttribute('role','region');
+  flow.setAttribute('aria-label','Gallery: Lake light and city lines');
+  flow.addEventListener('focus',function(){focused=true;clearTimers();});
+  flow.addEventListener('blur',function(){focused=false;schedule();});
+  flow.addEventListener('keydown',function(e){
+    if(e.key==='ArrowRight'||e.key==='ArrowLeft')takeControl();
+  });
+
+  /* Hover pauses it. */
+  flow.addEventListener('mouseenter',function(){hovering=true;clearTimers();});
+  flow.addEventListener('mouseleave',function(){hovering=false;schedule();});
+
+  /* Only advance while the gallery is actually on screen. */
+  if('IntersectionObserver' in window){
+    new IntersectionObserver(function(entries){
+      visible=entries[0].isIntersecting;
+      if(visible)schedule();else clearTimers();
+    },{threshold:0.25}).observe(flow);
+  }
+
+  /* And never advance while the tab is in the background. */
+  document.addEventListener('visibilitychange',function(){
+    if(document.hidden)clearTimers();else schedule();
+  });
+
+  /* Start it. */
+  schedule();
 })();
 </script>
 </body>

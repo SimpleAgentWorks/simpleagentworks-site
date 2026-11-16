@@ -21,7 +21,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const SITE = path.join(REPO, 'preview/swain-carousel-review');
+// The gallery auto-advance now lives on the PRODUCTION page (it was promoted
+// on 2026-11-16), so this suite tests the page that actually ships.
+const SITE = path.join(REPO, 'preview/swain-photography');
 const PORT = 5561;
 
 let passed = 0;
@@ -249,15 +251,15 @@ try {
     await ctx.close();
   }
 
-  // ---------------------------------------------------------- 8. live untouched
-  section('8. The LIVE page is not changed by this build');
+  // ---------------------------------------------------------- 8. production page
+  section('8. The PRODUCTION page carries the auto-advance and no review chrome');
   {
     const live = path.join(REPO, 'preview/swain-photography/index.html');
     const liveHtml = readFileSync(live, 'utf8');
-    check('the live page has no auto-advance script', !/Gallery auto-advance/.test(liveHtml));
-    check('the live page has no review banner', !/review-banner/.test(liveHtml));
-    const reviewHtml = readFileSync(path.join(SITE, 'index.html'), 'utf8');
-    check('the review page DOES have the auto-advance script', /Gallery auto-advance/.test(reviewHtml));
+    check('the production page HAS the auto-advance script', /Gallery auto-advance/.test(liveHtml));
+    check('the production page has NO review banner', !/review-banner/.test(liveHtml));
+    check('the production page has NO review-copy source',
+      !/swain-photography-review-copy/.test(liveHtml));
   }
 } catch (err) {
   failures.push('UNCAUGHT: ' + (err && err.stack ? err.stack : String(err)));
